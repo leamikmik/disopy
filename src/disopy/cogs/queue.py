@@ -7,7 +7,9 @@
 import logging
 from collections import deque
 from random import sample
+from math import ceil
 from typing import Iterable, NamedTuple, cast
+from itertools import islice
 
 import discord
 from discord import PCMVolumeTransformer, VoiceClient, app_commands
@@ -20,6 +22,10 @@ from ..config import Config
 from ..options import Options
 from .base import Base
 
+def convert(seconds):
+    min, sec = divmod(seconds, 60)
+    hour, min = divmod(min, 60)
+    return '%d:%02d:%02d' % (hour, min, sec) if hour > 0 else '%02d:%02d' % (min, sec)
 
 class Song(NamedTuple):
     """Data representation for a Subsonic song.
@@ -27,11 +33,14 @@ class Song(NamedTuple):
     Attributes:
         id: The ID in the Subsonic server.
         title: The title of the song.
+        artist: The primary artist of the song
+        duration: The duration of the song in seconds
     """
 
     id: str
     title: str
-
+    artist: str
+    duration: int
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +138,7 @@ class Queue:
         return len(self.queue[id])
     
     def shuffle(self, interaction: Interaction) -> None:
-        """Shuffles the currenc queue
+        """Shuffles the current queue
 
         Args:
             interaction: The interaction where the guild ID can be found.
@@ -139,6 +148,21 @@ class Queue:
         if id is None:
             return
         self.queue[id] = deque(sample(self.queue[id],len(self.queue[id])))
+
+    def duration(self, interaction: Interaction) -> int:
+        """Calculates the remaining duration of the queue, without the current song
+
+        Args:
+            interaction: The interaction where the guild ID can be found.
+
+        Returns:
+            Seconds of remaining duration
+        """
+        id = self._check_guild(interaction)
+        if id is None:
+            return 0
+        
+        return sum(song.duration for song in self.queue[id])
 
 
 class QueueCog(Base):
@@ -289,7 +313,7 @@ class QueueCog(Base):
             song_name: The name of the song.
         """
 
-        await interaction.response.defer(thinking=True)
+        # await interaction.response.defer(thinking=True)
 
         # Extract the type of element to be search, taking care of the default value
         choice = what if isinstance(what, str) else what.value
@@ -314,7 +338,7 @@ class QueueCog(Base):
                     return
 
                 playing_element_name = song.title
-                self.queue.append(interaction, Song(song.id, song.title))
+                self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
 
             case "album":
                 albums = self.subsonic.searching.search(query, song_count=0, album_count=10, artist_count=0).albums
@@ -336,7 +360,7 @@ class QueueCog(Base):
                         logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
                         continue
 
-                    self.queue.append(interaction, Song(song.id, song.title))
+                    self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
 
             case "playlist":
                 for playlist in self.subsonic.playlists.get_playlists():
@@ -357,7 +381,7 @@ class QueueCog(Base):
                                 logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
                                 continue
 
-                            self.queue.append(interaction, Song(song.id, song.title))
+                            self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
                         break
 
         if first_play:
@@ -472,24 +496,31 @@ class QueueCog(Base):
 
     @app_commands.command(name="queue", description="See the current queue")
     # Name changed to avoid collisions with the property `queue`
-    async def queue_command(self, interaction: Interaction) -> None:
+    async def queue_command(self, interaction: Interaction, page: int = 1) -> None:
         """List the songs added to the queue.
 
         Args:
             interaction: The interaction that started the command.
         """
-
         content = []
-        if self.now_playing is not None:
-            content.append(f"Now playing: **{self.now_playing.title}**")
-            content.append("")
-
+        max_page = ceil(self.queue.length(interaction)/10)
         length = self.queue.length(interaction)
 
+        if 1 > page or page > max_page:
+            await self.send_error(interaction, ["Out of queue bounds"])
+
+        if self.now_playing is not None:
+            content.append(f"Now playing: {self.now_playing.artist} - **{self.now_playing.title}**")
+            content.append("")
+
+        page -= 1
         if length > 0:
-            content.append("Next:")
-            for song in self.queue.get(interaction):
-                content.append(f"- **{song.title}**")
+            content.append(f"""Remaining time - {convert(self.queue.duration(interaction))}
+                           Pages - {page+1}/{max_page}
+                           
+                           Next:""")
+            for num, song in enumerate(islice(self.queue.get(interaction), 10*page, 10*(page + 1))):
+                content.append(f"{10*page + num + 1}. {song.artist} - **{song.title}**\t[{convert(song.duration)}]")
 
         if length == 0:
             content.append("_Queue empty_")
