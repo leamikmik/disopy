@@ -6,6 +6,7 @@
 
 import logging
 from collections import deque
+from random import sample
 from typing import Iterable, NamedTuple, cast
 
 import discord
@@ -124,8 +125,20 @@ class Queue:
         if id is None:
             # A little ugly but gets the job done
             return 0
-
+ 
         return len(self.queue[id])
+    
+    def shuffle(self, interaction: Interaction) -> None:
+        """Shuffles the currenc queue
+
+        Args:
+            interaction: The interaction where the guild ID can be found.
+
+        """
+        id = self._check_guild(interaction)
+        if id is None:
+            return
+        self.queue[id] = deque(sample(self.queue[id],len(self.queue[id])))
 
 
 class QueueCog(Base):
@@ -439,6 +452,24 @@ class QueueCog(Base):
         self.play_queue(interaction, None)
         await self.send_answer(interaction, "▶️ Resuming the playback")
 
+    @app_commands.command(name="shuffle", description="Shuffles the current queue")
+    async def shuffle_command(self, interaction: Interaction) -> None:
+        """Mixes the songs in the queue, if one exists
+
+        Args:
+            interaction: The interaction that started the command.
+        """
+        voice_client = await self.get_voice_client(interaction)
+        if voice_client is None:
+            return
+        
+        if self.queue.length(interaction) == 0:
+            await self.send_error(interaction, ["The queue is empty"])
+            return
+        
+        self.queue.shuffle(interaction)
+        await self.send_answer(interaction, "🔀 Shuffling the queue")
+
     @app_commands.command(name="queue", description="See the current queue")
     # Name changed to avoid collisions with the property `queue`
     async def queue_command(self, interaction: Interaction) -> None:
@@ -475,7 +506,7 @@ class QueueCog(Base):
         """
 
         # Defer immediately to avoid timeout
-        await interaction.response.defer(thinking=True)
+        # await interaction.response.defer(thinking=True)
 
         voice_client = await self.get_voice_client(interaction)
         if voice_client is None:
