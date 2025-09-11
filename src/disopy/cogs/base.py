@@ -28,6 +28,16 @@ class Base(Cog):
         self.bot = bot
         self.options = options
 
+    def seconds_to_str(self, seconds: int) -> str:
+        """Converts seconds to h:m:s
+
+        Args:
+            seconds: Time in seconds
+        """
+        min, sec = divmod(seconds, 60)
+        hour, min = divmod(min, 60)
+        return '%d:%02d:%02d' % (hour, min, sec) if hour > 0 else '%02d:%02d' % (min, sec)
+
     async def send_answer(
         self, interaction: Interaction, title: str, content: list[str] | None = None, ephemeral: bool = False
     ) -> None:
