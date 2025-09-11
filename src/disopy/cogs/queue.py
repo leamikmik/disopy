@@ -498,6 +498,32 @@ class QueueCog(Base):
         self.play_queue(interaction, None)
         await self.send_answer(interaction, "▶️ Resuming the playback")
 
+    @app_commands.command(name="leave", description="Kick the bot from the voice call")
+    async def leave(self, interaction: Interaction) -> None:
+        user = interaction.user
+        if isinstance(user, discord.User):
+            await self.send_error(interaction, ["You are not a member of the guild, something has gone very wrong..."])
+            return None
+
+        if user.voice is None or user.voice.channel is None:
+            await self.send_error(interaction, ["You are not connected to any voice channel!"])
+            return None
+
+        guild = interaction.guild
+        if guild is None:
+            await self.send_error(interaction, ["We are not chatting in a guild, something has gone very wrong..."])
+            return None
+
+        if guild.voice_client is None:
+            await self.send_error(interaction, ["I'm not connected to a voice channel!"])
+            return None
+
+        if user.voice.channel != guild.voice_client.channel:
+            await self.send_error(interaction, ["Join the same voice channel where I am"])
+            return None
+        
+        await guild.voice_client.disconnect()
+
     @app_commands.command(name="shuffle", description="Shuffles the current queue")
     async def shuffle_command(self, interaction: Interaction) -> None:
         """Mixes the songs in the queue, if one exists
