@@ -521,8 +521,10 @@ class QueueCog(Base):
         if user.voice.channel != guild.voice_client.channel:
             await self.send_error(interaction, ["Join the same voice channel where I am"])
             return None
-        
-        await guild.voice_client.disconnect()
+        try:
+            await guild.voice_client.disconnect()
+        finally:
+            await self.send_answer(interaction, "🚪 Bot left", ["Goodbye."])
 
     @app_commands.command(name="shuffle", description="Shuffles the current queue")
     async def shuffle_command(self, interaction: Interaction) -> None:
