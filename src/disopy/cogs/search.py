@@ -65,7 +65,7 @@ class Search(Base):
 
                 for song in songs:
                     content.append(
-                        f"- **{song.title}**" + (f" - {song.artist.name}" if song.artist is not None else "")
+                        "- " + (f"{song.artist.name} - " if song.artist is not None else "") + f"**{song.title}** [{self.seconds_to_str(song.duration)}]"
                     )
 
             case "album":
@@ -74,7 +74,7 @@ class Search(Base):
 
                 for album in albums:
                     content.append(
-                        f"- **{album.name}**" + (f" - {album.artist.name}" if album.artist is not None else "")
+                        "- " + (f"{album.artist.name} - " if album.artist is not None else "") + f"**{album.name}**"
                     )
 
             case "artist":
