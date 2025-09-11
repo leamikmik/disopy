@@ -22,11 +22,6 @@ from ..config import Config
 from ..options import Options
 from .base import Base
 
-def convert(seconds):
-    min, sec = divmod(seconds, 60)
-    hour, min = divmod(min, 60)
-    return '%d:%02d:%02d' % (hour, min, sec) if hour > 0 else '%02d:%02d' % (min, sec)
-
 class Song(NamedTuple):
     """Data representation for a Subsonic song.
 
@@ -276,7 +271,7 @@ class QueueCog(Base):
         if interaction.guild.voice_client is None:
             logger.warning("There is not available voice client in this interaction!")
             return
-
+        
         voice_client = cast(VoiceClient, interaction.guild.voice_client)
 
         voice_client.play(
@@ -291,67 +286,73 @@ class QueueCog(Base):
         self.now_playing = song
         voice_client.source = PCMVolumeTransformer(voice_client.source, volume=self.config.volume / 100)
 
-    @app_commands.command(description="Add a song, album, or playlist to the queue")
-    @app_commands.choices(
-        what=[
-            app_commands.Choice(name="Song", value="song"),
-            app_commands.Choice(name="Album", value="album"),
-            app_commands.Choice(name="Playlist", value="playlist"),
-        ]
-    )
+    async def query_autocomplete(self, interaction: Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Looks up song/album for autocomplete
+        
+        Args:
+            interaction: The interaction that started the command.
+            current: Current input into query.
+        """
+
+        results = []
+
+        if len(current) >= 3:
+            search = self.subsonic.searching.search(current, song_count=5, album_count=5, artist_count=0)
+            for song in search.songs:
+                results.append(app_commands.Choice(name=f"🎵 {(f"{song.artist.name} - " if song.artist is not None else "")}{song.title} [{self.seconds_to_str(song.duration)}]", value=f"song:{song.id}"))
+            for album in search.albums:
+                results.append(app_commands.Choice(name=f"🎶 {(f"{album.artist.name} - " if album.artist is not None else "")}{album.name}  ({album.song_count} songs)", value=f"album:{album.id}"))
+        else:
+            results = [app_commands.Choice(name="Input 3 or more letters to search", value="")]
+        return results
+    
+    @app_commands.command(description="Add a song or album to the queue")
+    @app_commands.autocomplete(query=query_autocomplete)
     async def play(
         self,
         interaction: Interaction,
         query: str,
-        # Ignore the MyPy error because discord.py uses the type to add autocompletion
-        what: app_commands.Choice[str] = "song",  # type: ignore
     ) -> None:
         """Add a song in the queue and start the playback if it's stop.
 
         Args:
             interaction: The interaction that started the command.
-            song_name: The name of the song.
+            query: The type of media to play and its id.
         """
 
-        # await interaction.response.defer(thinking=True)
-
-        # Extract the type of element to be search, taking care of the default value
-        choice = what if isinstance(what, str) else what.value
-
+        
         voice_client = await self.get_voice_client(interaction, True)
         if voice_client is None:
             return
 
-        playing_element_name = query
+        choice, value = query.split(":")
         first_play = self.queue.length(interaction) == 0 and self.now_playing is None
+        playing_element_name = ""
 
         match choice:
             case "song":
-                songs = self.subsonic.searching.search(query, song_count=10, album_count=0, artist_count=0).songs
-                if songs is None:
+                song = self.subsonic.browsing.get_song(value)
+                if song is None:
                     await self.send_error(interaction, [f"No songs found with the name: **{query}**"])
                     return
-
-                song = songs[0]
+                
                 if song.title is None:
                     await self.send_error(interaction, [f"The song is missing the required metadata: {query}"])
                     return
-
+                
                 playing_element_name = song.title
                 self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
 
             case "album":
-                albums = self.subsonic.searching.search(query, song_count=0, album_count=10, artist_count=0).albums
-                if albums is None:
+                album = self.subsonic.browsing.get_album(value)
+                if album is None:
                     await self.send_error(interaction, [f"No albums found with the name: **{query}**"])
                     return
-
-                album = albums[0].generate()
-                print(album)
+                
                 if album.songs is None:
                     await self.send_error(interaction, [f"The album is missing the required metadata: {query}"])
                     return
-
+                
                 if album.name is not None:
                     playing_element_name = album.name
 
@@ -361,28 +362,49 @@ class QueueCog(Base):
                         continue
 
                     self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
+            case _:
+                await self.send_error(interaction, [f"No songs found with the name: **{query}**"])
+                return
 
-            case "playlist":
-                for playlist in self.subsonic.playlists.get_playlists():
-                    if playlist.name is None:
+        if first_play:
+            await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}**"])
+        else:
+            await self.send_answer(interaction, "🎧 Added to the queue", [f"**{playing_element_name}**"])
+
+        if not voice_client.is_playing():
+            self.play_queue(interaction, None)
+
+    @app_commands.command(description="Adds a playlist to the queue")
+    async def playlist(self, interaction: Interaction, query: str) -> None:
+        """Queues a playlist
+        
+        Args:
+            interaction: The interaction that started the command.
+            query: The name of the playlist
+        """
+        voice_client = await self.get_voice_client(interaction, True)
+        if voice_client is None:
+            return
+
+        first_play = self.queue.length(interaction) == 0 and self.now_playing is None
+        playing_element_name = query
+
+        for playlist in self.subsonic.playlists.get_playlists():
+            if playlist.name is None:
+                continue
+            if query.lower() in playlist.name.lower():
+                playlist = playlist.generate()
+                if playlist.songs is None:
+                    await self.send_error(interaction, ["The playlist has no songs!"])
+                    return
+                if playlist.name is not None:
+                    playing_element_name = playlist.name
+                for song in playlist.songs:
+                    if song.title is None:
+                        logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
                         continue
-
-                    if query in playlist.name:
-                        playlist = playlist.generate()
-                        if playlist.songs is None:
-                            await self.send_error(interaction, ["The playlist has no songs!"])
-                            return
-
-                        if playlist.name is not None:
-                            playing_element_name = playlist.name
-
-                        for song in playlist.songs:
-                            if song.title is None:
-                                logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
-                                continue
-
-                            self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
-                        break
+                    self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
+                break
 
         if first_play:
             await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}**"])
@@ -515,12 +537,12 @@ class QueueCog(Base):
 
         page -= 1
         if length > 0:
-            content.append(f"""Remaining time - {convert(self.queue.duration(interaction))}
+            content.append(f"""Remaining time - {self.seconds_to_str(self.queue.duration(interaction))}
                            Pages - {page+1}/{max_page}
                            
                            Next:""")
             for num, song in enumerate(islice(self.queue.get(interaction), 10*page, 10*(page + 1))):
-                content.append(f"{10*page + num + 1}. {song.artist} - **{song.title}**\t[{convert(song.duration)}]")
+                content.append(f"{10*page + num + 1}. {song.artist} - **{song.title}**\t[{self.seconds_to_str(song.duration)}]")
 
         if length == 0:
             content.append("_Queue empty_")
