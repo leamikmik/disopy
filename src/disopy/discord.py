@@ -62,7 +62,7 @@ def get_bot(subsonic: Subsonic, config: Config, options: Options) -> Bot:
     intents = discord.Intents.default()
     intents.message_content = True
 
-    bot = discord.ext.commands.Bot(f"!{APP_NAME_LOWER}", intents=intents)
+    bot = discord.ext.commands.Bot(f"!{APP_NAME_LOWER}", intents=intents, activity=discord.Activity(type=discord.ActivityType.listening, name="music"))
 
     @bot.event
     async def on_ready() -> None:
