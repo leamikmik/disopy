@@ -158,7 +158,18 @@ class Queue:
             return 0
         
         return sum(song.duration for song in self.queue[id])
-
+    
+    def clear(self, interaction: Interaction) -> None:
+        """Empties the queue
+        
+        Args:
+            interaction: The interaction where the guild ID can be found.
+        """
+        id = self._check_guild(interaction)
+        if id is None:
+            return
+        
+        self.queue[id] = deque()
 
 class QueueCog(Base):
     """Cog that holds queue handling and music playback commands."""
@@ -201,6 +212,9 @@ class QueueCog(Base):
 
         if guild.voice_client is None:
             if connect:
+                self.queue.clear(interaction)
+                self.now_playing = None
+                self.loop = 0
                 return await user.voice.channel.connect(self_deaf=True)
             await self.send_error(interaction, ["I'm not connected to a voice channel!"])
             return None
@@ -321,7 +335,7 @@ class QueueCog(Base):
                         results.append(app_commands.Choice(name=res[:97 - len(num_songs)] + "..." + num_songs, value=f"album:{album.id}"))
                     else:
                         results.append(app_commands.Choice(name=res + num_songs, value=f"album:{album.id}"))
-                        
+
             if len(results) == 0:
                 results = [app_commands.Choice(name="No result found :(", value="")]        
         else:
@@ -500,6 +514,20 @@ class QueueCog(Base):
         voice_client.stop()
         await self.send_answer(interaction, "⏭️ Song skipped")
 
+    @app_commands.command(description="Clear the queue")
+    async def clear(self, interaction: Interaction) -> None:
+        """Clears the remaining queue
+        
+        Args:
+            interaction: The interaction that started the command.
+        """
+        voice_client = await self.get_voice_client(interaction)
+        if voice_client is None:
+            return
+
+        self.queue.clear(interaction)
+        await self.send_answer(interaction, "🗑️ Cleared the queue")
+
     @app_commands.command(description="Resume the playback")
     async def resume(self, interaction: Interaction) -> None:
         """Resume the playback of the song and if there is no one playing play the next one in the queue.
@@ -524,7 +552,7 @@ class QueueCog(Base):
         self.play_queue(interaction, None)
         await self.send_answer(interaction, "▶️ Resuming the playback")
 
-    @app_commands.command(name="leave", description="Kick the bot from the voice call")
+    @app_commands.command(description="Kick the bot from the voice call")
     async def leave(self, interaction: Interaction) -> None:
         user = interaction.user
         if isinstance(user, discord.User):
@@ -570,21 +598,22 @@ class QueueCog(Base):
         if voice_client is None:
             return
         
-        if self.queue.length(interaction) == 0 and what != 2:
+        if self.queue.length(interaction) == 0 and what.value != 2:
             await self.send_error(interaction, ["The queue is empty"])
             return
-        if self.now_playing is None and what == 2:
+        if self.now_playing is None and what.value == 2:
             await self.send_error(interaction, ["Nothing is playing"])
             return
 
-        if what == self.loop:
+        if what.value == self.loop:
             self.loop = 0
             await self.send_answer(interaction, "🔁 Stopped looping")
+            return
 
-        if what == 1 and self.now_playing is not None:
+        if what.value == 1 and self.now_playing is not None and self.now_playing != self.queue[-1]:
             self.queue.append(interaction, self.now_playing)
 
-        self.loop = what
+        self.loop = what.value
         await self.send_answer(interaction, "🔁 Now looping queue" if what == 1 else "🔂 Now looping current track")
 
     @app_commands.command(name="shuffle", description="Shuffles the current queue")
@@ -617,7 +646,7 @@ class QueueCog(Base):
         max_page = ceil(self.queue.length(interaction)/10)
         length = self.queue.length(interaction)
 
-        if 1 > page or page > max_page:
+        if (1 > page or page > max_page) and max_page != 0:
             await self.send_error(interaction, ["Out of queue bounds"])
 
         if self.now_playing is not None:
@@ -625,6 +654,8 @@ class QueueCog(Base):
             content.append("")
 
         page -= 1
+        if self.loop > 0:
+            content.append(f"Looping {"queue" if self.loop == 1 else "track"}")
         if length > 0:
             content.append(f"""Remaining time - {self.seconds_to_str(self.queue.duration(interaction))}
                            Pages - {page+1}/{max_page}
