@@ -180,6 +180,7 @@ class QueueCog(Base):
 
         self.queue = Queue()
         self.now_playing: Song | None = None
+        self.loop = 0 # 0: no loop; 1: loop queue; 2: loop track
 
         self.skip_next_autoplay = False
 
@@ -235,11 +236,14 @@ class QueueCog(Base):
         if exception is not None:
             raise exception
 
-        if self.queue.length(interaction) == 0:
+        if self.queue.length(interaction) == 0 and self.loop < 2:
             logger.info("The queue is empty")
             return
 
-        song = self.queue.pop(interaction)
+        song = self.queue.pop(interaction) if self.loop < 2 else self.now_playing
+        if self.loop == 1:
+            self.queue.append(interaction, song)
+
         if song is None:
             logger.error("Unable to get the song for playback")
             return
@@ -297,11 +301,29 @@ class QueueCog(Base):
         results = []
 
         if len(current) >= 3:
-            search = self.subsonic.searching.search(current, song_count=5, album_count=5, artist_count=0)
-            for song in search.songs:
-                results.append(app_commands.Choice(name=f"🎵 {(f"{song.artist.name} - " if song.artist is not None else "")}{song.title} [{self.seconds_to_str(song.duration)}]", value=f"song:{song.id}"))
-            for album in search.albums:
-                results.append(app_commands.Choice(name=f"🎶 {(f"{album.artist.name} - " if album.artist is not None else "")}{album.name}  ({album.song_count} songs)", value=f"album:{album.id}"))
+            search = self.subsonic.searching.search(current, song_count=5, album_count=5, artist_count=5)
+            if search.songs is not None:
+                for song in search.songs:
+                    res = f"🎵 {(f"{song.artists[0].name} - " if song.artists[0].name is not None else "")}{song.title}"
+                    duration = f" [{self.seconds_to_str(song.duration)}]"
+                    # Trunctuate result length if over 100 characters
+                    if len(res) + len(duration) > 100:
+                        results.append(app_commands.Choice(name=res[:97 - len(duration)] + "..." + duration, value=f"song:{song.id}"))
+                    else:
+                        results.append(app_commands.Choice(name= res + duration, value=f"song:{song.id}"))
+            
+            if search.albums is not None:
+                for album in search.albums:
+                    res = f"🎶 {(f"{album.artists[0].name} - " if album.artists[0] is not None else "")}{album.name}"
+                    num_songs = f" ({album.song_count} songs)"
+                    # Trunctuate result length if over 100 characters
+                    if len(res) + len(num_songs) > 100:
+                        results.append(app_commands.Choice(name=res[:97 - len(num_songs)] + "..." + num_songs, value=f"album:{album.id}"))
+                    else:
+                        results.append(app_commands.Choice(name=res + num_songs, value=f"album:{album.id}"))
+                        
+            if len(results) == 0:
+                results = [app_commands.Choice(name="No result found :(", value="")]        
         else:
             results = [app_commands.Choice(name="Input 3 or more letters to search", value="")]
         return results
@@ -328,12 +350,13 @@ class QueueCog(Base):
         choice, value = query.split(":")
         first_play = self.queue.length(interaction) == 0 and self.now_playing is None
         playing_element_name = ""
+        songs_added = 0
 
         match choice:
             case "song":
                 song = self.subsonic.browsing.get_song(value)
                 if song is None:
-                    await self.send_error(interaction, [f"No songs found with the name: **{query}**"])
+                    await self.send_error(interaction, [f"No song found"])
                     return
                 
                 if song.title is None:
@@ -346,7 +369,7 @@ class QueueCog(Base):
             case "album":
                 album = self.subsonic.browsing.get_album(value)
                 if album is None:
-                    await self.send_error(interaction, [f"No albums found with the name: **{query}**"])
+                    await self.send_error(interaction, [f"No album found"])
                     return
                 
                 if album.songs is None:
@@ -360,16 +383,17 @@ class QueueCog(Base):
                     if song.title is None:
                         logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
                         continue
-
+                    songs_added += 1
                     self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
+
             case _:
-                await self.send_error(interaction, [f"No songs found with the name: **{query}**"])
+                await self.send_error(interaction, [f"No songs found"])
                 return
 
         if first_play:
-            await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}**"])
+            await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}**{f" ({songs_added} songs added)" if songs_added > 0 else ""}"])
         else:
-            await self.send_answer(interaction, "🎧 Added to the queue", [f"**{playing_element_name}**"])
+            await self.send_answer(interaction, "🎧 Added to the queue", [f"**{playing_element_name}**{f" ({songs_added} songs added)" if songs_added > 0 else ""}"])
 
         if not voice_client.is_playing():
             self.play_queue(interaction, None)
@@ -388,6 +412,7 @@ class QueueCog(Base):
 
         first_play = self.queue.length(interaction) == 0 and self.now_playing is None
         playing_element_name = query
+        songs_added = 0
 
         for playlist in self.subsonic.playlists.get_playlists():
             if playlist.name is None:
@@ -403,13 +428,14 @@ class QueueCog(Base):
                     if song.title is None:
                         logger.error(f"The song with ID '{song.id}' is missing the name metadata entry")
                         continue
+                    songs_added += 1
                     self.queue.append(interaction, Song(song.id, song.title, song.artists[0].name, song.duration))
                 break
 
         if first_play:
-            await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}**"])
+            await self.send_answer(interaction, "🎵 Now playing!", [f"**{playing_element_name}** ({songs_added} songs added)"])
         else:
-            await self.send_answer(interaction, "🎧 Added to the queue", [f"**{playing_element_name}**"])
+            await self.send_answer(interaction, "🎧 Added to the queue", [f"**{playing_element_name}** ({songs_added} songs added)"])
 
         if not voice_client.is_playing():
             self.play_queue(interaction, None)
@@ -525,6 +551,41 @@ class QueueCog(Base):
             await guild.voice_client.disconnect()
         finally:
             await self.send_answer(interaction, "🚪 Bot left", ["Goodbye."])
+
+    @app_commands.command(name="loop", description="Loops the queue")
+    @app_commands.choices(
+        what = [
+            app_commands.Choice(name="Queue", value=1),
+            app_commands.Choice(name="Song", value=2)
+        ]
+    )
+    async def loop_command(self, interaction: Interaction, what: app_commands.Choice[int] = 1) -> None:
+        """Loops the queue / current track
+        
+        Args:
+            interaction: The interaction that started the command.
+            what: How to loop queue
+        """
+        voice_client = await self.get_voice_client(interaction)
+        if voice_client is None:
+            return
+        
+        if self.queue.length(interaction) == 0 and what != 2:
+            await self.send_error(interaction, ["The queue is empty"])
+            return
+        if self.now_playing is None and what == 2:
+            await self.send_error(interaction, ["Nothing is playing"])
+            return
+
+        if what == self.loop:
+            self.loop = 0
+            await self.send_answer(interaction, "🔁 Stopped looping")
+
+        if what == 1 and self.now_playing is not None:
+            self.queue.append(interaction, self.now_playing)
+
+        self.loop = what
+        await self.send_answer(interaction, "🔁 Now looping queue" if what == 1 else "🔂 Now looping current track")
 
     @app_commands.command(name="shuffle", description="Shuffles the current queue")
     async def shuffle_command(self, interaction: Interaction) -> None:
