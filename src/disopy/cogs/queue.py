@@ -315,7 +315,7 @@ class QueueCog(Base):
         results = []
 
         if len(current) >= 3:
-            search = self.subsonic.searching.search(current, song_count=5, album_count=5, artist_count=5)
+            search = self.subsonic.searching.search(current, song_count=5, album_count=5, artist_count=0)
             if search.songs is not None:
                 for song in search.songs:
                     res = f"🎵 {(f"{song.artists[0].name} - " if song.artists[0].name is not None else "")}{song.title}"
